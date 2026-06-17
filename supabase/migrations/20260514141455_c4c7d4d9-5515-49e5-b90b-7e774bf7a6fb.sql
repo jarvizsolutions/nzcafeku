@@ -1,0 +1,1 @@
+INSERT INTO public.app_settings (id, require_order_otp, ordering_mode) VALUES (true, false, 'qr') ON CONFLICT (id) DO NOTHING;
