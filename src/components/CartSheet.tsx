@@ -19,7 +19,7 @@ const PHONE_KEY = "fsc_customer_phone_v1";
 // Parcel surcharge — flat rule so the diner sees it before placing the order.
 // Small order (< ₹200) → ₹10. Larger order → ₹15. Edit here when real prices land.
 const PARCEL_SMALL = 5;
-const PARCEL_BIG = 10;
+const PARCEL_BIG = 5;
 const PARCEL_THRESHOLD = 200;
 const parcelCharge = (subtotal: number) => (subtotal < PARCEL_THRESHOLD ? PARCEL_SMALL : PARCEL_BIG);
 
