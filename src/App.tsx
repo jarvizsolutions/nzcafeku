@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { CartProvider } from "@/contexts/CartContext";
 import Landing from "./pages/Landing";
 import Menu from "./pages/Menu";
+import SelectTable from "./pages/SelectTable";
 import Track from "./pages/Track";
 import Confirm from "./pages/Confirm";
 import Pay from "./pages/Pay";
@@ -30,6 +31,7 @@ const App = () => (
         <BrowserRouter>
           <Routes>
             <Route path="/" element={<Landing />} />
+            <Route path="/select-table" element={<SelectTable />} />
             <Route path="/menu" element={<Menu />} />
             <Route path="/confirm/:id" element={<Confirm />} />
             <Route path="/track/:id" element={<Track />} />
