@@ -1032,6 +1032,122 @@ const OrdersOverview = () => {
     }
   };
 
+  // Custom date-range export. Default: last 7 days.
+  const [rangeOpen, setRangeOpen] = useState(false);
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const weekAgoKey = new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10);
+  const [rangeFrom, setRangeFrom] = useState(weekAgoKey);
+  const [rangeTo, setRangeTo] = useState(todayKey);
+
+  const exportRange = async () => {
+    if (!rangeFrom || !rangeTo) { toast.error("Pick both dates"); return; }
+    if (rangeFrom > rangeTo) { toast.error("'From' date must be before 'To'"); return; }
+    setExporting(true);
+    try {
+      const startISO = new Date(`${rangeFrom}T00:00:00`).toISOString();
+      const endDate = new Date(`${rangeTo}T00:00:00`);
+      endDate.setDate(endDate.getDate() + 1);
+      const endISO = endDate.toISOString();
+
+      const { data: ordersRange, error: oErr } = await supabase
+        .from("orders").select("*")
+        .neq("status", "cancelled")
+        .gte("created_at", startISO)
+        .lt("created_at", endISO)
+        .order("created_at", { ascending: true });
+      if (oErr) throw oErr;
+
+      const ids = (ordersRange || []).map((o) => o.id);
+      let items: any[] = [];
+      if (ids.length) {
+        const chunks: string[][] = [];
+        for (let i = 0; i < ids.length; i += 200) chunks.push(ids.slice(i, i + 200));
+        for (const c of chunks) {
+          const { data: it, error: iErr } = await supabase
+            .from("order_items").select("*").in("order_id", c);
+          if (iErr) throw iErr;
+          items = items.concat(it || []);
+        }
+      }
+
+      const validOrders = ordersRange || [];
+      const totalRevenue = validOrders.reduce((s, o) => s + withTax(Number(o.total || 0)), 0);
+      const totalOrders = validOrders.length;
+      const paidCount = validOrders.filter((o) => o.is_paid).length;
+      const totalItems = items.reduce((s, i) => s + Number(i.quantity || 0), 0);
+      const aov = totalOrders ? totalRevenue / totalOrders : 0;
+
+      const cashOf = (o: any) => {
+        if (!o.is_paid) return 0;
+        if (o.cash_amount != null) return Number(o.cash_amount);
+        return o.payment_method === "cash" ? withTax(Number(o.total || 0)) : 0;
+      };
+      const upiOf = (o: any) => {
+        if (!o.is_paid) return 0;
+        if (o.upi_amount != null) return Number(o.upi_amount);
+        return o.payment_method === "upi" ? withTax(Number(o.total || 0)) : 0;
+      };
+      const totalCash = validOrders.reduce((s, o) => s + cashOf(o), 0);
+      const totalUpi  = validOrders.reduce((s, o) => s + upiOf(o), 0);
+
+      const itemMap = new Map<string, { name: string; qty: number; revenue: number; orders: Set<string> }>();
+      items.forEach((i) => {
+        if (i.is_cancelled) return;
+        const key = `${i.name}${i.variant_label ? ` (${i.variant_label})` : ""}`;
+        const cur = itemMap.get(key) || { name: key, qty: 0, revenue: 0, orders: new Set() };
+        cur.qty += Number(i.quantity || 0);
+        cur.revenue += Number(i.unit_price || 0) * Number(i.quantity || 0);
+        cur.orders.add(i.order_id);
+        itemMap.set(key, cur);
+      });
+      const itemBreakdown = Array.from(itemMap.values())
+        .map((v) => ({ item: v.name, quantity: v.qty, revenue: v.revenue, orders: v.orders.size }))
+        .sort((a, b) => b.revenue - a.revenue);
+
+      const wb = XLSX.utils.book_new();
+      const summary = [
+        ["Report", "Custom range"],
+        ["From", rangeFrom],
+        ["To", rangeTo],
+        ["Generated", new Date().toLocaleString()],
+        [],
+        ["Total revenue", totalRevenue],
+        ["Cash collected", totalCash],
+        ["UPI collected", totalUpi],
+        ["Total orders", totalOrders],
+        ["Paid orders", paidCount],
+        ["Unpaid orders", totalOrders - paidCount],
+        ["Items sold", totalItems],
+        ["Avg order value", Number(aov.toFixed(2))],
+      ];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), "Summary");
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(validOrders.map((o) => ({
+        OrderId: o.id, Table: o.table_number, Customer: o.customer_name || "",
+        Phone: o.customer_phone || "",
+        Status: o.status, Paid: o.is_paid ? "Yes" : "No",
+        Payment: o.payment_method || "",
+        Cash: o.cash_amount ?? "",
+        UPI: o.upi_amount ?? "",
+        Total: withTax(Number(o.total || 0)),
+        CreatedAt: new Date(o.created_at).toLocaleString(),
+      }))), "Orders");
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(items.map((i) => ({
+        OrderId: i.order_id, Item: i.name, Variant: i.variant_label || "",
+        UnitPrice: Number(i.unit_price), Qty: i.quantity,
+        Cancelled: i.is_cancelled ? "Yes" : "No",
+        Subtotal: Number(i.unit_price) * Number(i.quantity),
+      }))), "Items");
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(itemBreakdown), "Item Analysis");
+      XLSX.writeFile(wb, `report-${rangeFrom}_to_${rangeTo}.xlsx`);
+      toast.success(`Exported ${totalOrders} orders (${rangeFrom} → ${rangeTo})`);
+      setRangeOpen(false);
+    } catch (e: any) {
+      toast.error(e.message || "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const deleteReport = async (id: string) => {
     if (!confirm("Delete this saved report?")) return;
     const { error } = await supabase.from("monthly_reports").delete().eq("id", id);
@@ -1093,6 +1209,10 @@ const OrdersOverview = () => {
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" disabled={exporting} onClick={() => setRangeOpen(true)}>
+              <Download className="h-4 w-4" />
+              Export range
+            </Button>
             <Button variant="outline" size="sm" disabled={exporting} onClick={exportAllTime}>
               <Download className="h-4 w-4" />
               {exporting ? "Exporting…" : "Export all-time"}
@@ -1100,6 +1220,42 @@ const OrdersOverview = () => {
           </div>
         </div>
       </div>
+
+      <Dialog open={rangeOpen} onOpenChange={(v) => !exporting && setRangeOpen(v)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Export by date range</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">From</span>
+                <Input
+                  type="date"
+                  value={rangeFrom}
+                  max={rangeTo || todayKey}
+                  onChange={(e) => setRangeFrom(e.target.value)}
+                />
+              </label>
+              <label className="block">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">To</span>
+                <Input
+                  type="date"
+                  value={rangeTo}
+                  min={rangeFrom}
+                  max={todayKey}
+                  onChange={(e) => setRangeTo(e.target.value)}
+                />
+              </label>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Excel includes summary (with From/To), all orders, line items and item analysis for the selected window.
+            </p>
+            <Button variant="hero" className="w-full" disabled={exporting} onClick={exportRange}>
+              <Download className="h-4 w-4" />
+              {exporting ? "Exporting…" : "Download Excel"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <div className="overflow-hidden rounded-2xl bg-card shadow-soft">
         <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-secondary/40 px-3 py-2">
@@ -1115,57 +1271,116 @@ const OrdersOverview = () => {
           )}
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[640px] text-sm">
-            <thead className="bg-secondary text-left text-xs uppercase tracking-wider text-muted-foreground">
-              <tr>
-                <th className="p-3">Customer</th>
-                <th className="p-3">Phone</th>
-                <th className="p-3">Table</th>
-                <th className="p-3">Status</th>
-                <th className="p-3">Total</th>
-                <th className="p-3">Paid</th>
-                <th className="p-3">Pay</th>
-                <th className="p-3">Time</th>
-                <th className="p-3">Bill</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(showAllOrders ? orders : orders.slice(0, 10)).map((o) => (
-                <tr key={o.id} className="border-t border-border/60">
-                  <td className="p-3 font-mono text-xs">{o.customer_name}</td>
-                  <td className="p-3 text-xs">{o.customer_phone || "—"}</td>
-                  <td className="p-3 font-semibold">T{o.table_number}</td>
-                  <td className="p-3"><StatusPill s={o.status} /></td>
-                  <td className="p-3 font-semibold">{formatINR(withTax(Number(o.total)))}</td>
-                  <td className="p-3">{o.is_paid ? "✓" : "—"}</td>
-                  <td className="p-3 text-lg" title={o.payment_method || ""}>
-                    {o.is_paid ? (
-                      <button
-                        type="button"
-                        onClick={() => openEditPay(o)}
-                        className="rounded-md px-1.5 py-0.5 hover:bg-secondary"
-                        title={`Edit payment (${o.payment_method || "?"})`}
-                      >
-                        {o.payment_method === "cash" ? "💵"
-                          : o.payment_method === "upi" ? "📱"
-                          : o.payment_method === "mixed" ? "💵📱"
-                          : "—"}
-                      </button>
-                    ) : "—"}
-                  </td>
-                  <td className="p-3 text-muted-foreground">{new Date(o.created_at).toLocaleString()}</td>
-                  <td className="p-3">
-                    <Button size="sm" variant="ghost" onClick={() => setBillId(o.id)} title="View bill">
-                      <Eye className="h-3.5 w-3.5" /> View
-                    </Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      {(() => {
+        const displayedOrders = showAllOrders ? orders : orders.slice(0, 10);
+
+        // Group by local date string e.g. "19/6/2026"
+        const groups: { dateKey: string; label: string; items: typeof orders }[] = [];
+        const seen = new Map<string, number>();
+        displayedOrders.forEach((o) => {
+          const d = new Date(o.created_at);
+          const dateKey = toLocalDateKey(d);
+          const today = toLocalDateKey(new Date());
+          const yesterday = toLocalDateKey(new Date(Date.now() - 86400000));
+          const label =
+            dateKey === today
+              ? `Today — ${d.toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}`
+              : dateKey === yesterday
+              ? `Yesterday — ${d.toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}`
+              : d.toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+          if (seen.has(dateKey)) {
+            groups[seen.get(dateKey)!].items.push(o);
+          } else {
+            seen.set(dateKey, groups.length);
+            groups.push({ dateKey, label, items: [o] });
+          }
+        });
+
+        return (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-2 rounded-2xl bg-card px-4 py-2 shadow-soft">
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                {showAllOrders
+                  ? `All orders (${orders.length})`
+                  : `Recent orders (showing ${Math.min(10, orders.length)} of ${orders.length})`}
+              </p>
+              {orders.length > 10 && (
+                <Button size="sm" variant="ghost" onClick={() => setShowAllOrders((v) => !v)}>
+                  {showAllOrders ? "Show recent 10" : "View all"}
+                </Button>
+              )}
+            </div>
+
+            {groups.map((g) => (
+              <div key={g.dateKey} className="overflow-hidden rounded-2xl bg-card shadow-soft">
+                {/* Date separator heading */}
+                <div className="flex items-center gap-3 border-b border-border/60 bg-secondary/60 px-4 py-2.5">
+                  <span className="h-2 w-2 rounded-full bg-primary shrink-0" />
+                  <p className="text-xs font-bold uppercase tracking-wider text-foreground">
+                    {g.label}
+                  </p>
+                  <span className="ml-auto rounded-full bg-secondary px-2 py-0.5 text-[10px] font-bold text-muted-foreground">
+                    {g.items.length} {g.items.length === 1 ? "order" : "orders"}
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[640px] text-sm">
+                    <thead className="bg-secondary/40 text-left text-xs uppercase tracking-wider text-muted-foreground">
+                      <tr>
+                        <th className="p-3">Customer</th>
+                        <th className="p-3">Phone</th>
+                        <th className="p-3">Table</th>
+                        <th className="p-3">Status</th>
+                        <th className="p-3">Total</th>
+                        <th className="p-3">Paid</th>
+                        <th className="p-3">Pay</th>
+                        <th className="p-3">Time</th>
+                        <th className="p-3">Bill</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {g.items.map((o) => (
+                        <tr key={o.id} className="border-t border-border/60">
+                          <td className="p-3 font-mono text-xs">{o.customer_name}</td>
+                          <td className="p-3 text-xs">{o.customer_phone || "—"}</td>
+                          <td className="p-3 font-semibold">T{o.table_number}</td>
+                          <td className="p-3"><StatusPill s={o.status} /></td>
+                          <td className="p-3 font-semibold">{formatINR(withTax(Number(o.total)))}</td>
+                          <td className="p-3">{o.is_paid ? "✓" : "—"}</td>
+                          <td className="p-3 text-lg" title={o.payment_method || ""}>
+                            {o.is_paid ? (
+                              <button
+                                type="button"
+                                onClick={() => openEditPay(o)}
+                                className="rounded-md px-1.5 py-0.5 hover:bg-secondary"
+                                title={`Edit payment (${o.payment_method || "?"})`}
+                              >
+                                {o.payment_method === "cash" ? "💵"
+                                  : o.payment_method === "upi" ? "📱"
+                                  : o.payment_method === "mixed" ? "💵📱"
+                                  : "—"}
+                              </button>
+                            ) : "—"}
+                          </td>
+                          <td className="p-3 text-muted-foreground">
+                            {new Date(o.created_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })}
+                          </td>
+                          <td className="p-3">
+                            <Button size="sm" variant="ghost" onClick={() => setBillId(o.id)} title="View bill">
+                              <Eye className="h-3.5 w-3.5" /> View
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       <BillDialog
         orderId={billId}
@@ -1508,7 +1723,9 @@ const ItemAnalytics = () => {
   const [date, setDate] = useState<string>(() => toLocalDateKey(new Date()));
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<Array<{ key: string; name: string; image_url: string | null; qty: number; revenue: number }>>([]);
-  const [totals, setTotals] = useState<{ orders: number; items: number; revenue: number }>({ orders: 0, items: 0, revenue: 0 });
+  const [totals, setTotals] = useState<{ orders: number; items: number; revenue: number; cash: number; upi: number }>(
+    { orders: 0, items: 0, revenue: 0, cash: 0, upi: 0 }
+  );
 
   const load = async () => {
     setLoading(true);
@@ -1516,13 +1733,31 @@ const ItemAnalytics = () => {
       const start = new Date(`${date}T00:00:00`);
       const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
       const { data: ords, error: oe } = await supabase
-        .from("orders").select("id,status")
+        .from("orders").select("id,status,total,is_paid,payment_method,cash_amount,upi_amount")
         .gte("created_at", start.toISOString())
         .lt("created_at", end.toISOString());
       if (oe) throw oe;
-      const orderIds = (ords || []).filter((o: any) => o.status !== "cancelled").map((o: any) => o.id);
+      const validOrders = (ords || []).filter((o: any) => o.status !== "cancelled");
+      const orderIds = validOrders.map((o: any) => o.id);
+      // Revenue (incl. tax) for the day — mirrors the "Today" earning card.
+      const dayRevenue = validOrders.reduce((s: number, o: any) => s + withTax(Number(o.total || 0)), 0);
+      // Cash/UPI split: use stored split columns when present, else fall back to payment_method.
+      const cashOf = (o: any) => {
+        if (!o.is_paid) return 0;
+        if (o.cash_amount != null) return Number(o.cash_amount);
+        return o.payment_method === "cash" ? withTax(Number(o.total || 0)) : 0;
+      };
+      const upiOf = (o: any) => {
+        if (!o.is_paid) return 0;
+        if (o.upi_amount != null) return Number(o.upi_amount);
+        return o.payment_method === "upi" ? withTax(Number(o.total || 0)) : 0;
+      };
+      const dayCash = validOrders.reduce((s: number, o: any) => s + cashOf(o), 0);
+      const dayUpi  = validOrders.reduce((s: number, o: any) => s + upiOf(o), 0);
       if (orderIds.length === 0) {
-        setRows([]); setTotals({ orders: 0, items: 0, revenue: 0 }); return;
+        setRows([]);
+        setTotals({ orders: 0, items: 0, revenue: 0, cash: 0, upi: 0 });
+        return;
       }
       const { data: items, error: ie } = await supabase
         .from("order_items")
@@ -1553,7 +1788,7 @@ const ItemAnalytics = () => {
       }
       const list = Array.from(agg.values()).sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name));
       setRows(list);
-      setTotals({ orders: orderIds.length, items: totalItems, revenue: totalRev });
+      setTotals({ orders: orderIds.length, items: totalItems, revenue: dayRevenue, cash: dayCash, upi: dayUpi });
     } catch (e: any) {
       toast.error(e.message || "Failed to load analytics");
     } finally { setLoading(false); }
@@ -1605,10 +1840,17 @@ const ItemAnalytics = () => {
           </Button>
           {isToday && <span className="ml-auto rounded-full bg-primary/10 px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-primary">Live · today</span>}
         </div>
-        <div className="mt-4 grid grid-cols-2 gap-2 sm:gap-3">
+        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3">
           <Stat label="Orders" value={String(totals.orders)} />
           <Stat label="Items sold" value={String(totals.items)} />
-          {/* <Stat label="Revenue" value={formatINR(totals.revenue)} /> */}
+          <div className="rounded-2xl bg-gradient-primary p-3 text-primary-foreground shadow-soft">
+            <p className="text-[10px] font-semibold uppercase tracking-wider opacity-80">Revenue</p>
+            <p className="mt-1 font-display text-2xl font-bold leading-none">{formatINR(totals.revenue)}</p>
+            <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] opacity-90">
+              <span>Cash <b>{formatINR(totals.cash)}</b></span>
+              <span>UPI <b>{formatINR(totals.upi)}</b></span>
+            </div>
+          </div>
         </div>
       </div>
 
