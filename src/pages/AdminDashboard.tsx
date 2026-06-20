@@ -50,7 +50,6 @@ const Inner = () => {
   const [tab, setTab] = useState("bills");
   const [moreOpen, setMoreOpen] = useState(false);
 
-  /* active style — teal/green instead of red */
   const triggerBase =
     "rounded-full data-[state=active]:bg-destructive data-[state=active]:text-white";
 
@@ -79,7 +78,7 @@ const Inner = () => {
 
         <Tabs value={tab} onValueChange={(v) => { setTab(v); setMoreOpen(false); }} className="mt-6">
 
-          {/* ── Desktop TabsList (all 8 tabs, unchanged layout) ── */}
+          {/* ── Desktop TabsList ── */}
           <TabsList className="hidden sm:grid h-auto sm:grid-cols-9 gap-1 rounded-2xl bg-secondary p-1">
             {ALL_TABS.map((t) => (
               <TabsTrigger key={t} value={t} className={triggerBase}>
@@ -88,7 +87,7 @@ const Inner = () => {
             ))}
           </TabsList>
 
-          {/* ── Mobile TabsList (3 primary + More button) ── */}
+          {/* ── Mobile TabsList ── */}
           <div className="sm:hidden">
             <div className="flex gap-1 rounded-2xl bg-secondary p-1">
               {PRIMARY_TABS.map((t) => (
@@ -104,7 +103,6 @@ const Inner = () => {
                   {TAB_LABELS[t]}
                 </button>
               ))}
-              {/* More button */}
               <button
                 onClick={() => setMoreOpen((v) => !v)}
                 className={`flex items-center gap-1 rounded-full px-3 py-2 text-sm font-medium transition-colors
@@ -118,7 +116,6 @@ const Inner = () => {
               </button>
             </div>
 
-            {/* Dropdown panel for secondary tabs */}
             {moreOpen && (
               <div className="mt-1 rounded-2xl bg-card shadow-soft border border-border/50 p-2 flex flex-col gap-1 z-20 relative">
                 {SECONDARY_TABS.map((t) => (
@@ -741,6 +738,50 @@ const QrDialog = ({ table }: { table: any }) => {
 };
 
 /* -------- ORDERS OVERVIEW -------- */
+
+// Helper: returns "YYYY-MM-DD" in local time
+const toLocalDateKey = (d: Date): string => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
+type DateGroup = {
+  dateKey: string;
+  label: string;
+  items: any[];
+};
+
+const buildDateGroups = (orderList: any[]): DateGroup[] => {
+  const todayKey = toLocalDateKey(new Date());
+  const yesterdayKey = toLocalDateKey(new Date(Date.now() - 86400000));
+  const groups: DateGroup[] = [];
+  const seen = new Map<string, number>();
+
+  orderList.forEach((o) => {
+    const d = new Date(o.created_at);
+    const dateKey = toLocalDateKey(d);
+    let label: string;
+    if (dateKey === todayKey) {
+      label = `Today — ${d.toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}`;
+    } else if (dateKey === yesterdayKey) {
+      label = `Yesterday — ${d.toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}`;
+    } else {
+      label = d.toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    }
+
+    if (seen.has(dateKey)) {
+      groups[seen.get(dateKey)!].items.push(o);
+    } else {
+      seen.set(dateKey, groups.length);
+      groups.push({ dateKey, label, items: [o] });
+    }
+  });
+
+  return groups;
+};
+
 const OrdersOverview = () => {
   const [orders, setOrders] = useState<any[]>([]);
   const [monthOrders, setMonthOrders] = useState<any[]>([]);
@@ -896,12 +937,8 @@ const OrdersOverview = () => {
         .sort((a, b) => b.revenue - a.revenue);
 
       const overall = {
-        revenue: totalRevenue,
-        orders: totalOrders,
-        paid_orders: paidCount,
-        unpaid_orders: totalOrders - paidCount,
-        items_sold: totalItems,
-        avg_order_value: aov,
+        revenue: totalRevenue, orders: totalOrders, paid_orders: paidCount,
+        unpaid_orders: totalOrders - paidCount, items_sold: totalItems, avg_order_value: aov,
       };
 
       const periodStart = start.toISOString().slice(0, 10);
@@ -916,35 +953,24 @@ const OrdersOverview = () => {
 
       const wb = XLSX.utils.book_new();
       const summary = [
-        ["Period", label],
-        ["From", periodStart],
-        ["To", periodEnd],
-        [],
-        ["Total revenue", totalRevenue],
-        ["Total orders", totalOrders],
-        ["Paid orders", paidCount],
-        ["Unpaid orders", totalOrders - paidCount],
-        ["Items sold", totalItems],
-        ["Avg order value", Number(aov.toFixed(2))],
+        ["Period", label], ["From", periodStart], ["To", periodEnd], [],
+        ["Total revenue", totalRevenue], ["Total orders", totalOrders],
+        ["Paid orders", paidCount], ["Unpaid orders", totalOrders - paidCount],
+        ["Items sold", totalItems], ["Avg order value", Number(aov.toFixed(2))],
       ];
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), "Summary");
-
-      const ordersSheet = (ordersRange || []).map((o) => ({
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((ordersRange || []).map((o) => ({
         OrderId: o.id, Table: o.table_number, Customer: o.customer_name || "",
         Status: o.status, Paid: o.is_paid ? "Yes" : "No",
         Payment: o.payment_method || "", Total: withTax(Number(o.total || 0)),
         CreatedAt: new Date(o.created_at).toLocaleString(),
-      }));
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ordersSheet), "Orders");
-
-      const itemsSheet = items.map((i) => ({
+      }))), "Orders");
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(items.map((i) => ({
         OrderId: i.order_id, Item: i.name, Variant: i.variant_label || "",
         UnitPrice: Number(i.unit_price), Qty: i.quantity,
         Subtotal: Number(i.unit_price) * Number(i.quantity),
-      }));
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(itemsSheet), "Items");
+      }))), "Items");
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(itemBreakdown), "Item Analysis");
-
       XLSX.writeFile(wb, `report-${periodStart}_to_${periodEnd}.xlsx`);
       toast.success(`Exported & saved: ${label}`);
       load();
@@ -1000,15 +1026,10 @@ const OrdersOverview = () => {
       const today = new Date().toISOString().slice(0, 10);
       const wb = XLSX.utils.book_new();
       const summary = [
-        ["Report", "All-time"],
-        ["Generated", today],
-        [],
-        ["Total revenue", totalRevenue],
-        ["Total orders", totalOrders],
-        ["Paid orders", paidCount],
-        ["Unpaid orders", totalOrders - paidCount],
-        ["Items sold", totalItems],
-        ["Avg order value", Number(aov.toFixed(2))],
+        ["Report", "All-time"], ["Generated", today], [],
+        ["Total revenue", totalRevenue], ["Total orders", totalOrders],
+        ["Paid orders", paidCount], ["Unpaid orders", totalOrders - paidCount],
+        ["Items sold", totalItems], ["Avg order value", Number(aov.toFixed(2))],
       ];
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), "Summary");
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(validOrders.map((o) => ({
@@ -1032,7 +1053,6 @@ const OrdersOverview = () => {
     }
   };
 
-  // Custom date-range export. Default: last 7 days.
   const [rangeOpen, setRangeOpen] = useState(false);
   const todayKey = new Date().toISOString().slice(0, 10);
   const weekAgoKey = new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10);
@@ -1106,18 +1126,11 @@ const OrdersOverview = () => {
 
       const wb = XLSX.utils.book_new();
       const summary = [
-        ["Report", "Custom range"],
-        ["From", rangeFrom],
-        ["To", rangeTo],
-        ["Generated", new Date().toLocaleString()],
-        [],
-        ["Total revenue", totalRevenue],
-        ["Cash collected", totalCash],
-        ["UPI collected", totalUpi],
-        ["Total orders", totalOrders],
-        ["Paid orders", paidCount],
-        ["Unpaid orders", totalOrders - paidCount],
-        ["Items sold", totalItems],
+        ["Report", "Custom range"], ["From", rangeFrom], ["To", rangeTo],
+        ["Generated", new Date().toLocaleString()], [],
+        ["Total revenue", totalRevenue], ["Cash collected", totalCash], ["UPI collected", totalUpi],
+        ["Total orders", totalOrders], ["Paid orders", paidCount],
+        ["Unpaid orders", totalOrders - paidCount], ["Items sold", totalItems],
         ["Avg order value", Number(aov.toFixed(2))],
       ];
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), "Summary");
@@ -1126,8 +1139,7 @@ const OrdersOverview = () => {
         Phone: o.customer_phone || "",
         Status: o.status, Paid: o.is_paid ? "Yes" : "No",
         Payment: o.payment_method || "",
-        Cash: o.cash_amount ?? "",
-        UPI: o.upi_amount ?? "",
+        Cash: o.cash_amount ?? "", UPI: o.upi_amount ?? "",
         Total: withTax(Number(o.total || 0)),
         CreatedAt: new Date(o.created_at).toLocaleString(),
       }))), "Orders");
@@ -1179,6 +1191,10 @@ const OrdersOverview = () => {
     }
   };
 
+  // ── Build date groups outside JSX ──
+  const displayedOrders = showAllOrders ? orders : orders.slice(0, 10);
+  const dateGroups = buildDateGroups(displayedOrders);
+
   return (
     <div>
       <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -1228,22 +1244,11 @@ const OrdersOverview = () => {
             <div className="grid grid-cols-2 gap-3">
               <label className="block">
                 <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">From</span>
-                <Input
-                  type="date"
-                  value={rangeFrom}
-                  max={rangeTo || todayKey}
-                  onChange={(e) => setRangeFrom(e.target.value)}
-                />
+                <Input type="date" value={rangeFrom} max={rangeTo || todayKey} onChange={(e) => setRangeFrom(e.target.value)} />
               </label>
               <label className="block">
                 <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">To</span>
-                <Input
-                  type="date"
-                  value={rangeTo}
-                  min={rangeFrom}
-                  max={todayKey}
-                  onChange={(e) => setRangeTo(e.target.value)}
-                />
+                <Input type="date" value={rangeTo} min={rangeFrom} max={todayKey} onChange={(e) => setRangeTo(e.target.value)} />
               </label>
             </div>
             <p className="text-[11px] text-muted-foreground">
@@ -1257,8 +1262,9 @@ const OrdersOverview = () => {
         </DialogContent>
       </Dialog>
 
-      <div className="overflow-hidden rounded-2xl bg-card shadow-soft">
-        <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-secondary/40 px-3 py-2">
+      {/* ── Orders list with date grouping ── */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between gap-2 rounded-2xl bg-card px-4 py-2.5 shadow-soft">
           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             {showAllOrders
               ? `All orders (${orders.length})`
@@ -1271,116 +1277,74 @@ const OrdersOverview = () => {
           )}
         </div>
 
-      {(() => {
-        const displayedOrders = showAllOrders ? orders : orders.slice(0, 10);
-
-        // Group by local date string e.g. "19/6/2026"
-        const groups: { dateKey: string; label: string; items: typeof orders }[] = [];
-        const seen = new Map<string, number>();
-        displayedOrders.forEach((o) => {
-          const d = new Date(o.created_at);
-          const dateKey = toLocalDateKey(d);
-          const today = toLocalDateKey(new Date());
-          const yesterday = toLocalDateKey(new Date(Date.now() - 86400000));
-          const label =
-            dateKey === today
-              ? `Today — ${d.toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}`
-              : dateKey === yesterday
-              ? `Yesterday — ${d.toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}`
-              : d.toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-          if (seen.has(dateKey)) {
-            groups[seen.get(dateKey)!].items.push(o);
-          } else {
-            seen.set(dateKey, groups.length);
-            groups.push({ dateKey, label, items: [o] });
-          }
-        });
-
-        return (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between gap-2 rounded-2xl bg-card px-4 py-2 shadow-soft">
-              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                {showAllOrders
-                  ? `All orders (${orders.length})`
-                  : `Recent orders (showing ${Math.min(10, orders.length)} of ${orders.length})`}
+        {dateGroups.map((g) => (
+          <div key={g.dateKey} className="overflow-hidden rounded-2xl bg-card shadow-soft">
+            {/* Date separator */}
+            <div className="flex items-center gap-3 border-b border-border/60 bg-secondary/60 px-4 py-2.5">
+              <span className="h-2 w-2 shrink-0 rounded-full bg-primary" />
+              <p className="text-xs font-bold uppercase tracking-wider text-foreground">
+                {g.label}
               </p>
-              {orders.length > 10 && (
-                <Button size="sm" variant="ghost" onClick={() => setShowAllOrders((v) => !v)}>
-                  {showAllOrders ? "Show recent 10" : "View all"}
-                </Button>
-              )}
+              <span className="ml-auto rounded-full bg-secondary px-2 py-0.5 text-[10px] font-bold text-muted-foreground">
+                {g.items.length} {g.items.length === 1 ? "order" : "orders"}
+              </span>
             </div>
 
-            {groups.map((g) => (
-              <div key={g.dateKey} className="overflow-hidden rounded-2xl bg-card shadow-soft">
-                {/* Date separator heading */}
-                <div className="flex items-center gap-3 border-b border-border/60 bg-secondary/60 px-4 py-2.5">
-                  <span className="h-2 w-2 rounded-full bg-primary shrink-0" />
-                  <p className="text-xs font-bold uppercase tracking-wider text-foreground">
-                    {g.label}
-                  </p>
-                  <span className="ml-auto rounded-full bg-secondary px-2 py-0.5 text-[10px] font-bold text-muted-foreground">
-                    {g.items.length} {g.items.length === 1 ? "order" : "orders"}
-                  </span>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[640px] text-sm">
-                    <thead className="bg-secondary/40 text-left text-xs uppercase tracking-wider text-muted-foreground">
-                      <tr>
-                        <th className="p-3">Customer</th>
-                        <th className="p-3">Phone</th>
-                        <th className="p-3">Table</th>
-                        <th className="p-3">Status</th>
-                        <th className="p-3">Total</th>
-                        <th className="p-3">Paid</th>
-                        <th className="p-3">Pay</th>
-                        <th className="p-3">Time</th>
-                        <th className="p-3">Bill</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {g.items.map((o) => (
-                        <tr key={o.id} className="border-t border-border/60">
-                          <td className="p-3 font-mono text-xs">{o.customer_name}</td>
-                          <td className="p-3 text-xs">{o.customer_phone || "—"}</td>
-                          <td className="p-3 font-semibold">T{o.table_number}</td>
-                          <td className="p-3"><StatusPill s={o.status} /></td>
-                          <td className="p-3 font-semibold">{formatINR(withTax(Number(o.total)))}</td>
-                          <td className="p-3">{o.is_paid ? "✓" : "—"}</td>
-                          <td className="p-3 text-lg" title={o.payment_method || ""}>
-                            {o.is_paid ? (
-                              <button
-                                type="button"
-                                onClick={() => openEditPay(o)}
-                                className="rounded-md px-1.5 py-0.5 hover:bg-secondary"
-                                title={`Edit payment (${o.payment_method || "?"})`}
-                              >
-                                {o.payment_method === "cash" ? "💵"
-                                  : o.payment_method === "upi" ? "📱"
-                                  : o.payment_method === "mixed" ? "💵📱"
-                                  : "—"}
-                              </button>
-                            ) : "—"}
-                          </td>
-                          <td className="p-3 text-muted-foreground">
-                            {new Date(o.created_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })}
-                          </td>
-                          <td className="p-3">
-                            <Button size="sm" variant="ghost" onClick={() => setBillId(o.id)} title="View bill">
-                              <Eye className="h-3.5 w-3.5" /> View
-                            </Button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            ))}
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[640px] text-sm">
+                <thead className="bg-secondary/40 text-left text-xs uppercase tracking-wider text-muted-foreground">
+                  <tr>
+                    <th className="p-3">Customer</th>
+                    <th className="p-3">Phone</th>
+                    <th className="p-3">Table</th>
+                    <th className="p-3">Status</th>
+                    <th className="p-3">Total</th>
+                    <th className="p-3">Paid</th>
+                    <th className="p-3">Pay</th>
+                    <th className="p-3">Time</th>
+                    <th className="p-3">Bill</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {g.items.map((o) => (
+                    <tr key={o.id} className="border-t border-border/60">
+                      <td className="p-3 font-mono text-xs">{o.customer_name}</td>
+                      <td className="p-3 text-xs">{o.customer_phone || "—"}</td>
+                      <td className="p-3 font-semibold">T{o.table_number}</td>
+                      <td className="p-3"><StatusPill s={o.status} /></td>
+                      <td className="p-3 font-semibold">{formatINR(withTax(Number(o.total)))}</td>
+                      <td className="p-3">{o.is_paid ? "✓" : "—"}</td>
+                      <td className="p-3 text-lg" title={o.payment_method || ""}>
+                        {o.is_paid ? (
+                          <button
+                            type="button"
+                            onClick={() => openEditPay(o)}
+                            className="rounded-md px-1.5 py-0.5 hover:bg-secondary"
+                            title={`Edit payment (${o.payment_method || "?"})`}
+                          >
+                            {o.payment_method === "cash" ? "💵"
+                              : o.payment_method === "upi" ? "📱"
+                              : o.payment_method === "mixed" ? "💵📱"
+                              : "—"}
+                          </button>
+                        ) : "—"}
+                      </td>
+                      <td className="p-3 text-muted-foreground">
+                        {new Date(o.created_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })}
+                      </td>
+                      <td className="p-3">
+                        <Button size="sm" variant="ghost" onClick={() => setBillId(o.id)} title="View bill">
+                          <Eye className="h-3.5 w-3.5" /> View
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
-        );
-      })()}
+        ))}
+      </div>
 
       <BillDialog
         orderId={billId}
@@ -1427,12 +1391,8 @@ const OrdersOverview = () => {
                   <div className="space-y-2 rounded-lg border border-border/60 p-2">
                     <label className="text-xs text-muted-foreground">Cash amount (₹)</label>
                     <Input
-                      type="number"
-                      min={0}
-                      max={grand}
-                      value={editCash}
-                      onChange={(e) => setEditCash(e.target.value)}
-                      placeholder="0"
+                      type="number" min={0} max={grand}
+                      value={editCash} onChange={(e) => setEditCash(e.target.value)} placeholder="0"
                     />
                     <div className="flex items-center justify-between text-xs">
                       <span>UPI (auto)</span>
@@ -1518,8 +1478,6 @@ const StatusPill = ({ s }: { s: string }) => {
   };
   return <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${map[s] || "bg-secondary"}`}>{s}</span>;
 };
-
-/* -------- COUNTER BILLS now lives in components/admin/CounterBills.tsx -------- */
 
 /* -------- SETTINGS -------- */
 const SettingsPanel = () => {
@@ -1711,14 +1669,7 @@ const AdminCategoriesPanel = () => {
   );
 };
 
-/* -------- ITEM ANALYTICS (sold quantity per dish, per day) -------- */
-const toLocalDateKey = (d: Date) => {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-};
-
+/* -------- ITEM ANALYTICS -------- */
 const ItemAnalytics = () => {
   const [date, setDate] = useState<string>(() => toLocalDateKey(new Date()));
   const [loading, setLoading] = useState(true);
@@ -1739,9 +1690,7 @@ const ItemAnalytics = () => {
       if (oe) throw oe;
       const validOrders = (ords || []).filter((o: any) => o.status !== "cancelled");
       const orderIds = validOrders.map((o: any) => o.id);
-      // Revenue (incl. tax) for the day — mirrors the "Today" earning card.
       const dayRevenue = validOrders.reduce((s: number, o: any) => s + withTax(Number(o.total || 0)), 0);
-      // Cash/UPI split: use stored split columns when present, else fall back to payment_method.
       const cashOf = (o: any) => {
         if (!o.is_paid) return 0;
         if (o.cash_amount != null) return Number(o.cash_amount);
