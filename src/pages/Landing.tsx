@@ -51,7 +51,7 @@ const Landing = () => {
           </p>
           <div className="space-y-3 pt-2">
             <Button asChild variant="gold" size="xl" className="w-full">
-              <Link to="/menu?table=1">
+              <Link to="/select-table">
                 Grab Your Meal <ArrowRight />
               </Link>
             </Button>
